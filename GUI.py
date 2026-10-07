@@ -5,10 +5,14 @@ import os
 from pathlib import Path
 import shlex
 import socket
+import time
 import stat
 import zipfile
 import zlib
 import tkinter as tk
+
+# Начало работы эмулятора. clear и cd этот таймер не сбрасывают.
+START_TIME = time.monotonic()
 
 
 
@@ -121,7 +125,7 @@ class MemoryVFS:
 
 
 def read_config(argv=None):
-    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 3, VFS в памяти")
+    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 4, основные команды")
     cli.add_argument("--vfs", default=str(Path(__file__).resolve().parent / "examples/vfs/minimal.zip"),
                      help="Путь к ZIP-архиву VFS (по умолчанию examples/vfs/minimal.zip)")
     cli.add_argument("--script", help="Путь к стартовому скрипту UTF-8")
@@ -157,8 +161,13 @@ def parser(user_input: str) -> dict:
 
 
 
-def command_result(output="", error=False, exit_requested=False):
-    return {"output": output, "error": error, "exit_requested": exit_requested}
+def command_result(output="", error=False, exit_requested=False, clear_requested=False):
+    return {
+        "output": output,
+        "error": error,
+        "exit_requested": exit_requested,
+        "clear_requested": clear_requested,
+    }
 
 
 def path_error(command, path, error):
@@ -198,6 +207,23 @@ def do_cd(args, vfs):
         return path_error("cd", path, error)
 
 
+def do_clear(args, vfs=None):
+    if args:
+        return command_result("clear: аргументы не поддерживаются", error=True)
+    return command_result(clear_requested=True)
+
+
+def do_uptime(args, vfs=None):
+    if args:
+        return command_result("uptime: аргументы не поддерживаются", error=True)
+    elapsed = int(time.monotonic() - START_TIME)
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return command_result(
+        f"Время работы эмулятора: {hours:02d}:{minutes:02d}:{seconds:02d}"
+    )
+
+
 def do_exit(args, vfs=None):
     if args:
         return command_result("exit: аргументы не поддерживаются", error=True)
@@ -210,7 +236,13 @@ def judge(parsed, vfs):
         return command_result(parsed["error"], error=True)
     if parsed["command"] is None:
         return command_result()
-    handlers = {"ls": do_ls, "cd": do_cd, "exit": do_exit}
+    handlers = {
+        "ls": do_ls,
+        "cd": do_cd,
+        "clear": do_clear,
+        "uptime": do_uptime,
+        "exit": do_exit,
+    }
     handler = handlers.get(parsed["command"])
     if handler is None:
         return command_result(f"{parsed['command']}: команда не найдена", error=True)
@@ -221,17 +253,19 @@ def make_invitation(vfs):
     return f"{vfs.cwd}$ " if vfs is not None else "[VFS не загружена]$ "
 
 
-def execute_line(text, write, vfs):
+def execute_line(text, write, vfs, clear_output=None):
     
     write(f"{make_invitation(vfs)}{text}\n")
     result = judge(parser(text), vfs)
+    if result["clear_requested"] and clear_output is not None:
+        clear_output()
     if result["output"]:
         write(result["output"] + "\n")
     return result
 
 
 
-def script_steps(path, write, vfs):
+def script_steps(path, write, vfs, clear_output=None):
     try:
         
         lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
@@ -243,7 +277,7 @@ def script_steps(path, write, vfs):
 
         if not text.strip() or text.lstrip().startswith("#"):
             continue
-        result = execute_line(text, write, vfs)
+        result = execute_line(text, write, vfs, clear_output)
         if result["error"]:
             write(f"Стартовый скрипт остановлен: ошибка в строке {line_number}.\n")
         yield result
@@ -304,6 +338,14 @@ class EmulatorApp:
         finally:
             self.output.configure(state=tk.DISABLED)
 
+    def clear_output(self):
+        # Удаляем только текст на экране: VFS, текущая папка и таймер сохраняются.
+        self.output.configure(state=tk.NORMAL)
+        try:
+            self.output.delete("1.0", tk.END)
+        finally:
+            self.output.configure(state=tk.DISABLED)
+
     def update_invitation(self):
         self.invitation.configure(text=make_invitation(self.vfs))
 
@@ -318,7 +360,7 @@ class EmulatorApp:
             return "break"
         text = self.entry.get()
         self.entry.delete(0, tk.END)
-        result = execute_line(text, self.output_print, self.vfs)
+        result = execute_line(text, self.output_print, self.vfs, self.clear_output)
         if result["exit_requested"]:
             self.GUI.destroy()
             return "break"
@@ -340,7 +382,7 @@ class EmulatorApp:
             self.enable_input()
             return
         self.running_script = True
-        self.steps = script_steps(self.config.script, self.output_print, self.vfs)
+        self.steps = script_steps(self.config.script, self.output_print, self.vfs, self.clear_output)
         self.run_next_script_line()
 
     def run_next_script_line(self):
