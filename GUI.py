@@ -1,16 +1,129 @@
 import argparse
+import base64
 import getpass
 import os
 from pathlib import Path
 import shlex
 import socket
+import stat
+import zipfile
+import zlib
 import tkinter as tk
 
 
 
+
+class VFSLoadError(Exception):
+    """Ошибка чтения ZIP или структуры виртуальной файловой системы."""
+
+
+class MemoryVFS:
+    """Содержимое ZIP живёт только в памяти. Архив открыт лишь при загрузке."""
+    def __init__(self):
+        self.directories = {"/"}
+        self.files = {}  # Виртуальный путь -> строка base64, включая двоичные файлы.
+        self.cwd = "/"   # Не связан с текущей папкой реальной ОС.
+
+    def add_directory(self, path):
+        if path in self.files:
+            raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
+        self.directories.add(path)
+
+    @classmethod
+    def from_zip(cls, archive_path):
+        vfs = cls()
+        seen = set()
+        try:
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                for info in archive.infolist():
+                    name = info.orig_filename
+                    # У ZIP свои пути: только относительные имена с разделителем /.
+                    parts = name.rstrip("/").split("/")
+                    if (name.startswith("/") or "\\" in name or "\x00" in name
+                            or any(part in ("", ".", "..") for part in parts)):
+                        raise VFSLoadError(f"недопустимое имя в ZIP: {name!r}")
+                    if stat.S_ISLNK(info.external_attr >> 16):
+                        raise VFSLoadError(f"символические ссылки не поддерживаются: {name}")
+                    path = "/" + "/".join(parts)
+                    if path in seen:
+                        raise VFSLoadError(f"повторяющийся путь в ZIP: {path}")
+                    seen.add(path)
+                    # ZIP может содержать файл a/b/c.txt без записей папок a/ и a/b/.
+                    for length in range(1, len(parts)):
+                        vfs.add_directory("/" + "/".join(parts[:length]))
+                    if info.is_dir():
+                        vfs.add_directory(path)
+                    else:
+                        if path in vfs.directories:
+                            raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
+                        data = archive.read(info)  # Байты в памяти, НЕ extract()/extractall().
+                        vfs.files[path] = base64.b64encode(data).decode("ascii")
+        except FileNotFoundError as error:
+            raise VFSLoadError(f"файл не найден: {archive_path}") from error
+        except zipfile.BadZipFile as error:
+            raise VFSLoadError(f"неверный формат или повреждённый ZIP: {archive_path}") from error
+        except (OSError, ValueError, RuntimeError, NotImplementedError, EOFError, zlib.error) as error:
+            raise VFSLoadError(f"не удалось прочитать ZIP: {error}") from error
+        return vfs
+
+    def resolve(self, path):
+        """Разбирает /, относительные пути, . и .. только внутри VFS."""
+        if not path or "\x00" in path:
+            raise FileNotFoundError("пустой или недопустимый путь")
+        parts = [] if path.startswith("/") else self.cwd.strip("/").split("/")
+        parts = [part for part in parts if part]
+        for part in path.split("/"):
+            if not part:
+                continue
+            current = "/" + "/".join(parts)
+            if current not in self.directories:
+                raise NotADirectoryError(current)
+            if part == ".":
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()  # Выше виртуального корня выйти нельзя.
+                continue
+            parts.append(part)
+            candidate = "/" + "/".join(parts)
+            if candidate not in self.directories and candidate not in self.files:
+                raise FileNotFoundError(candidate)
+        result = "/" + "/".join(parts)
+        if path.endswith("/") and result not in self.directories:
+            raise NotADirectoryError(result)
+        return result
+
+    def listdir(self, path="."):
+        path = self.resolve(path)
+        if path not in self.directories:
+            raise NotADirectoryError(path)
+        prefix = path.rstrip("/") + "/"
+        names = set()
+        for item in self.directories | self.files.keys():
+            if item.startswith(prefix):
+                tail = item[len(prefix):]
+                if tail and "/" not in tail:
+                    names.add(tail)
+        return sorted(names)
+
+    def chdir(self, path="/"):
+        new_path = self.resolve(path)
+        if new_path not in self.directories:
+            raise NotADirectoryError(new_path)
+        self.cwd = new_path
+
+    def read_bytes(self, path):
+        """Восстановление исходных байтов из памяти, без чтения файлов ОС."""
+        path = self.resolve(path)
+        if path in self.directories:
+            raise IsADirectoryError(path)
+        return base64.b64decode(self.files[path], validate=True)
+
+
 def read_config(argv=None):
-    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 2, конфигурация")
-    cli.add_argument("--vfs", default=".", help="Путь к VFS (по умолчанию текущая папка)")
+    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 3, VFS в памяти")
+    cli.add_argument("--vfs", default=str(Path(__file__).resolve().parent / "examples/vfs/minimal.zip"),
+                     help="Путь к ZIP-архиву VFS (по умолчанию examples/vfs/minimal.zip)")
     cli.add_argument("--script", help="Путь к стартовому скрипту UTF-8")
     config = cli.parse_args(argv)
 
@@ -60,35 +173,39 @@ def path_error(command, path, error):
     return command_result(f"{command}: {path}: {reason}", error=True)
 
 
-def do_ls(args):
+def do_ls(args, vfs):
+    if vfs is None:
+        return command_result("ls: VFS не загружена", error=True)
     if len(args) > 1:
         return command_result("ls: ожидается не более одного пути", error=True)
     path = args[0] if args else "."
     try:
-        return command_result("\n".join(sorted(os.listdir(path))))
+        return command_result("\n".join(vfs.listdir(path)))
     except (OSError, ValueError) as error:
         return path_error("ls", path, error)
 
 
-def do_cd(args):
+def do_cd(args, vfs):
+    if vfs is None:
+        return command_result("cd: VFS не загружена", error=True)
     if len(args) > 1:
         return command_result("cd: ожидается не более одного пути", error=True)
-    path = args[0] if args else os.path.expanduser("~")
+    path = args[0] if args else "/"
     try:
-        os.chdir(path)
+        vfs.chdir(path)
         return command_result()
     except (OSError, ValueError) as error:
         return path_error("cd", path, error)
 
 
-def do_exit(args):
+def do_exit(args, vfs=None):
     if args:
         return command_result("exit: аргументы не поддерживаются", error=True)
     # Окно закроет GUI после показа команды. Обработчик не трогает виджеты.
     return command_result(exit_requested=True)
 
 
-def judge(parsed):
+def judge(parsed, vfs):
     if parsed["error"]:
         return command_result(parsed["error"], error=True)
     if parsed["command"] is None:
@@ -97,33 +214,24 @@ def judge(parsed):
     handler = handlers.get(parsed["command"])
     if handler is None:
         return command_result(f"{parsed['command']}: команда не найдена", error=True)
-    return handler(parsed["args"])
+    return handler(parsed["args"], vfs)
 
 
-def make_invitation():
-    try:
-        cwd = os.getcwd()
-    except OSError:
-        return "[текущая папка недоступна]$ "
-    home = os.path.expanduser("~")
-    if cwd == home:
-        cwd = "~"
-    elif cwd.startswith(home + os.sep):
-        cwd = "~" + cwd[len(home):]
-    return f"{cwd}$ "
+def make_invitation(vfs):
+    return f"{vfs.cwd}$ " if vfs is not None else "[VFS не загружена]$ "
 
 
-def execute_line(text, write):
+def execute_line(text, write, vfs):
     
-    write(f"{make_invitation()}{text}\n")
-    result = judge(parser(text))
+    write(f"{make_invitation(vfs)}{text}\n")
+    result = judge(parser(text), vfs)
     if result["output"]:
         write(result["output"] + "\n")
     return result
 
 
 
-def script_steps(path, write):
+def script_steps(path, write, vfs):
     try:
         
         lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
@@ -135,7 +243,7 @@ def script_steps(path, write):
 
         if not text.strip() or text.lstrip().startswith("#"):
             continue
-        result = execute_line(text, write)
+        result = execute_line(text, write, vfs)
         if result["error"]:
             write(f"Стартовый скрипт остановлен: ошибка в строке {line_number}.\n")
         yield result
@@ -149,6 +257,7 @@ class EmulatorApp:
     def __init__(self, GUI, config):
         self.GUI = GUI
         self.config = config
+        self.vfs = None
         self.running_script = False
         GUI.configure(bg="#000000")
         GUI.title(f"Эмулятор - [{getpass.getuser()}@{socket.gethostname()}]")
@@ -196,7 +305,7 @@ class EmulatorApp:
             self.output.configure(state=tk.DISABLED)
 
     def update_invitation(self):
-        self.invitation.configure(text=make_invitation())
+        self.invitation.configure(text=make_invitation(self.vfs))
 
     def enable_input(self):
         self.running_script = False
@@ -209,7 +318,7 @@ class EmulatorApp:
             return "break"
         text = self.entry.get()
         self.entry.delete(0, tk.END)
-        result = execute_line(text, self.output_print)
+        result = execute_line(text, self.output_print, self.vfs)
         if result["exit_requested"]:
             self.GUI.destroy()
             return "break"
@@ -219,16 +328,19 @@ class EmulatorApp:
 
     def startup(self):
         try:
-            Path(self.config.vfs).stat()
-        except (OSError, ValueError) as error:
-            self.output_print(f"Ошибка пути VFS: {error}\nСтартовый скрипт не запущен.\n")
+            self.vfs = MemoryVFS.from_zip(self.config.vfs)
+        except VFSLoadError as error:
+            self.output_print(f"Ошибка загрузки VFS: {error}\nСтартовый скрипт не запущен.\n")
             self.enable_input()
             return
+        self.output_print(f"VFS загружена в память: файлов — {len(self.vfs.files)}, "
+                          f"папок — {len(self.vfs.directories)} (включая /).\n")
+        self.update_invitation()
         if self.config.script is None:
             self.enable_input()
             return
         self.running_script = True
-        self.steps = script_steps(self.config.script, self.output_print)
+        self.steps = script_steps(self.config.script, self.output_print, self.vfs)
         self.run_next_script_line()
 
     def run_next_script_line(self):
