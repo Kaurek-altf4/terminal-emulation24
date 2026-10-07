@@ -1,0 +1,6 @@
+# Переменную задаёт scripts/test_ok.sh.
+ls "$REPL_DEMO_ROOT"
+cd "$REPL_DEMO_ROOT"
+ls
+cd ..
+ls

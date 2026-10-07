@@ -1,0 +1,4 @@
+ls examples/vfs
+exit
+# До этой строки выполнение не дойдёт.
+unknown_command
