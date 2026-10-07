@@ -2,6 +2,7 @@ import argparse
 import base64
 import getpass
 import os
+import re
 from pathlib import Path
 import shlex
 import socket
@@ -27,11 +28,13 @@ class MemoryVFS:
         self.directories = {"/"}
         self.files = {}  # Виртуальный путь -> строка base64, включая двоичные файлы.
         self.cwd = "/"   # Не связан с текущей папкой реальной ОС.
+        self.permissions = {"/": 0o755}  # Только rwx, отдельно от содержимого файлов.
 
     def add_directory(self, path):
         if path in self.files:
             raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
         self.directories.add(path)
+        self.permissions.setdefault(path, 0o755)
 
     @classmethod
     def from_zip(cls, archive_path):
@@ -62,6 +65,13 @@ class MemoryVFS:
                             raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
                         data = archive.read(info)  # Байты в памяти, НЕ extract()/extractall().
                         vfs.files[path] = base64.b64encode(data).decode("ascii")
+                    # Используем Unix-права из ZIP, если они заданы. Иначе — обычные defaults.
+                    unix_mode = info.external_attr >> 16
+                    default = 0o755 if info.is_dir() else 0o644
+                    vfs.permissions[path] = (
+                        stat.S_IMODE(unix_mode) & 0o777
+                        if info.create_system == 3 and unix_mode else default
+                    )
         except FileNotFoundError as error:
             raise VFSLoadError(f"файл не найден: {archive_path}") from error
         except zipfile.BadZipFile as error:
@@ -124,8 +134,70 @@ class MemoryVFS:
         return base64.b64decode(self.files[path], validate=True)
 
 
+    def chmod(self, mode, paths, recursive=False):
+        # Сначала проверяем всё. Ошибка не должна оставить половину файлов изменённой.
+        apply_permission_mode(0, mode)
+        targets = set()
+        for path in paths:
+            resolved = self.resolve(path)
+            targets.add(resolved)
+            if recursive and resolved in self.directories:
+                prefix = resolved.rstrip("/") + "/"
+                targets.update(item for item in self.permissions if item.startswith(prefix))
+        changes = {
+            path: apply_permission_mode(self.permissions[path], mode)
+            for path in targets
+        }
+        self.permissions.update(changes)  # Никаких os.chmod или записи в ZIP.
+
+    def list_permissions(self, path="."):
+        resolved = self.resolve(path)
+        if resolved in self.files:
+            items = [resolved]
+        else:
+            prefix = resolved.rstrip("/") + "/"
+            items = [prefix + name for name in self.listdir(resolved)]
+        rows = []
+        for item in items:
+            kind = stat.S_IFDIR if item in self.directories else stat.S_IFREG
+            mode = self.permissions[item]
+            name = item.rsplit("/", 1)[-1]
+            rows.append(f"{stat.filemode(kind | mode)} {mode:04o} {name}")
+        return rows
+
+
+# Поддерживаем обычные rwx-права: 000..777 (или 0xxx) и [ugoa][+-=][rwx].
+# Например: 644, 0755, u+x, go-w, u=rw,g=r,o=.
+# Специальные биты, X и копирование прав вида g=u в этот учебный вариант не входят.
+def apply_permission_mode(current, mode):
+    if re.fullmatch(r"0?[0-7]{3}", mode):
+        return int(mode, 8)
+    clauses = mode.split(",")
+    parsed = [re.fullmatch(r"([ugoa]+)([+\-=])([rwx]*)", part) for part in clauses]
+    if not all(parsed):
+        raise ValueError("неверные права: используйте 644, 0755 или u+x,go-w (только rwx)")
+    for clause in parsed:
+        who, operation, rights = clause.groups()
+        groups = "ugo" if "a" in who else who
+        value = 0
+        for letter in rights:
+            value |= {"r": 4, "w": 2, "x": 1}[letter]
+        mask = bits = 0
+        for group in set(groups):
+            shift = {"u": 6, "g": 3, "o": 0}[group]
+            mask |= 7 << shift
+            bits |= value << shift
+        if operation == "+":
+            current |= bits
+        elif operation == "-":
+            current &= ~bits
+        else:
+            current = (current & ~mask) | bits
+    return current
+
+
 def read_config(argv=None):
-    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 4, основные команды")
+    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 5, chmod в памяти")
     cli.add_argument("--vfs", default=str(Path(__file__).resolve().parent / "examples/vfs/minimal.zip"),
                      help="Путь к ZIP-архиву VFS (по умолчанию examples/vfs/minimal.zip)")
     cli.add_argument("--script", help="Путь к стартовому скрипту UTF-8")
@@ -185,11 +257,15 @@ def path_error(command, path, error):
 def do_ls(args, vfs):
     if vfs is None:
         return command_result("ls: VFS не загружена", error=True)
+    detailed = bool(args and args[0] == "-l")
+    if detailed:
+        args = args[1:]
     if len(args) > 1:
-        return command_result("ls: ожидается не более одного пути", error=True)
+        return command_result("ls: ожидается не более одного пути (можно с -l)", error=True)
     path = args[0] if args else "."
     try:
-        return command_result("\n".join(vfs.listdir(path)))
+        rows = vfs.list_permissions(path) if detailed else vfs.listdir(path)
+        return command_result("\n".join(rows))
     except (OSError, ValueError) as error:
         return path_error("ls", path, error)
 
@@ -205,6 +281,28 @@ def do_cd(args, vfs):
         return command_result()
     except (OSError, ValueError) as error:
         return path_error("cd", path, error)
+
+
+def do_chmod(args, vfs):
+    if vfs is None:
+        return command_result("chmod: VFS не загружена", error=True)
+    recursive = bool(args and args[0] in ("-R", "--recursive"))
+    if recursive:
+        args = args[1:]
+    if args and args[0] == "--":
+        args = args[1:]
+    if len(args) < 2:
+        return command_result(
+            "chmod: использование: chmod [-R] MODE PATH [PATH ...]", error=True
+        )
+    mode, paths = args[0], args[1:]
+    try:
+        vfs.chmod(mode, paths, recursive)
+        return command_result()
+    except ValueError as error:
+        return command_result(f"chmod: {error}", error=True)
+    except OSError as error:
+        return path_error("chmod", str(error), error)
 
 
 def do_clear(args, vfs=None):
@@ -239,6 +337,7 @@ def judge(parsed, vfs):
     handlers = {
         "ls": do_ls,
         "cd": do_cd,
+        "chmod": do_chmod,
         "clear": do_clear,
         "uptime": do_uptime,
         "exit": do_exit,
