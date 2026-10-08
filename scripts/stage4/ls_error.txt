@@ -1,0 +1,3 @@
+uptime
+ls /missing-file-or-directory
+unknown_after_error

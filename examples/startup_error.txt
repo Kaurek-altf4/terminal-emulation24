@@ -1,4 +1,0 @@
-ls examples/vfs
-unknown_command
-# Эта команда не должна появиться в диалоге или выполниться.
-cd examples/vfs

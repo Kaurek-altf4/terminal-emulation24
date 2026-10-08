@@ -1,0 +1,4 @@
+ls /
+unknown_command
+# Эта строка не должна выполняться.
+cd /docs

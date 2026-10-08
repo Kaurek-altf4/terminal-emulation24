@@ -1,0 +1,4 @@
+ls /
+exit
+# Эта строка не должна выполняться.
+unknown_after_exit

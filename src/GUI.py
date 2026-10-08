@@ -12,23 +12,20 @@ import zipfile
 import zlib
 import tkinter as tk
 
-# Начало работы эмулятора. clear и cd этот таймер не сбрасывают.
+
 START_TIME = time.monotonic()
 
 
-
-
 class VFSLoadError(Exception):
-    """Ошибка чтения ZIP или структуры виртуальной файловой системы."""
+    pass
 
 
 class MemoryVFS:
-    """Содержимое ZIP живёт только в памяти. Архив открыт лишь при загрузке."""
     def __init__(self):
         self.directories = {"/"}
-        self.files = {}  # Виртуальный путь -> строка base64, включая двоичные файлы.
-        self.cwd = "/"   # Не связан с текущей папкой реальной ОС.
-        self.permissions = {"/": 0o755}  # Только rwx, отдельно от содержимого файлов.
+        self.files = {}
+        self.cwd = "/"
+        self.permissions = {"/": 0o755}
 
     def add_directory(self, path):
         if path in self.files:
@@ -44,7 +41,7 @@ class MemoryVFS:
             with zipfile.ZipFile(archive_path, "r") as archive:
                 for info in archive.infolist():
                     name = info.orig_filename
-                    # У ZIP свои пути: только относительные имена с разделителем /.
+
                     parts = name.rstrip("/").split("/")
                     if (name.startswith("/") or "\\" in name or "\x00" in name
                             or any(part in ("", ".", "..") for part in parts)):
@@ -55,7 +52,7 @@ class MemoryVFS:
                     if path in seen:
                         raise VFSLoadError(f"повторяющийся путь в ZIP: {path}")
                     seen.add(path)
-                    # ZIP может содержать файл a/b/c.txt без записей папок a/ и a/b/.
+
                     for length in range(1, len(parts)):
                         vfs.add_directory("/" + "/".join(parts[:length]))
                     if info.is_dir():
@@ -63,9 +60,9 @@ class MemoryVFS:
                     else:
                         if path in vfs.directories:
                             raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
-                        data = archive.read(info)  # Байты в памяти, НЕ extract()/extractall().
+                        data = archive.read(info)
                         vfs.files[path] = base64.b64encode(data).decode("ascii")
-                    # Используем Unix-права из ZIP, если они заданы. Иначе — обычные defaults.
+
                     unix_mode = info.external_attr >> 16
                     default = 0o755 if info.is_dir() else 0o644
                     vfs.permissions[path] = (
@@ -81,7 +78,6 @@ class MemoryVFS:
         return vfs
 
     def resolve(self, path):
-        """Разбирает /, относительные пути, . и .. только внутри VFS."""
         if not path or "\x00" in path:
             raise FileNotFoundError("пустой или недопустимый путь")
         parts = [] if path.startswith("/") else self.cwd.strip("/").split("/")
@@ -96,7 +92,7 @@ class MemoryVFS:
                 continue
             if part == "..":
                 if parts:
-                    parts.pop()  # Выше виртуального корня выйти нельзя.
+                    parts.pop()
                 continue
             parts.append(part)
             candidate = "/" + "/".join(parts)
@@ -127,7 +123,6 @@ class MemoryVFS:
         self.cwd = new_path
 
     def read_bytes(self, path):
-        """Восстановление исходных байтов из памяти, без чтения файлов ОС."""
         path = self.resolve(path)
         if path in self.directories:
             raise IsADirectoryError(path)
@@ -135,7 +130,7 @@ class MemoryVFS:
 
 
     def chmod(self, mode, paths, recursive=False):
-        # Сначала проверяем всё. Ошибка не должна оставить половину файлов изменённой.
+
         apply_permission_mode(0, mode)
         targets = set()
         for path in paths:
@@ -148,7 +143,7 @@ class MemoryVFS:
             path: apply_permission_mode(self.permissions[path], mode)
             for path in targets
         }
-        self.permissions.update(changes)  # Никаких os.chmod или записи в ZIP.
+        self.permissions.update(changes)
 
     def list_permissions(self, path="."):
         resolved = self.resolve(path)
@@ -166,9 +161,6 @@ class MemoryVFS:
         return rows
 
 
-# Поддерживаем обычные rwx-права: 000..777 (или 0xxx) и [ugoa][+-=][rwx].
-# Например: 644, 0755, u+x, go-w, u=rw,g=r,o=.
-# Специальные биты, X и копирование прав вида g=u в этот учебный вариант не входят.
 def apply_permission_mode(current, mode):
     if re.fullmatch(r"0?[0-7]{3}", mode):
         return int(mode, 8)
@@ -198,12 +190,12 @@ def apply_permission_mode(current, mode):
 
 def read_config(argv=None):
     cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 5, chmod в памяти")
-    cli.add_argument("--vfs", default=str(Path(__file__).resolve().parent / "examples/vfs/minimal.zip"),
-                     help="Путь к ZIP-архиву VFS (по умолчанию examples/vfs/minimal.zip)")
+    cli.add_argument("--vfs", default=str(Path(__file__).resolve().parents[1] / "vfs/minimal.zip"),
+                     help="Путь к ZIP-архиву VFS (по умолчанию vfs/minimal.zip)")
     cli.add_argument("--script", help="Путь к стартовому скрипту UTF-8")
     config = cli.parse_args(argv)
 
-    
+
     config.vfs = os.path.abspath(os.path.expanduser(os.path.expandvars(config.vfs)))
     if config.script is not None:
         config.script = os.path.abspath(
@@ -220,7 +212,6 @@ def config_text(config):
     )
 
 
-
 def parser(user_input: str) -> dict:
     try:
         tokens = shlex.split(user_input.strip())
@@ -230,7 +221,6 @@ def parser(user_input: str) -> dict:
         return {"command": None, "args": [], "error": None}
     args = [os.path.expanduser(os.path.expandvars(arg)) for arg in tokens[1:]]
     return {"command": tokens[0], "args": args, "error": None}
-
 
 
 def command_result(output="", error=False, exit_requested=False, clear_requested=False):
@@ -325,7 +315,7 @@ def do_uptime(args, vfs=None):
 def do_exit(args, vfs=None):
     if args:
         return command_result("exit: аргументы не поддерживаются", error=True)
-    # Окно закроет GUI после показа команды. Обработчик не трогает виджеты.
+
     return command_result(exit_requested=True)
 
 
@@ -353,7 +343,7 @@ def make_invitation(vfs):
 
 
 def execute_line(text, write, vfs, clear_output=None):
-    
+
     write(f"{make_invitation(vfs)}{text}\n")
     result = judge(parser(text), vfs)
     if result["clear_requested"] and clear_output is not None:
@@ -363,10 +353,9 @@ def execute_line(text, write, vfs, clear_output=None):
     return result
 
 
-
 def script_steps(path, write, vfs, clear_output=None):
     try:
-        
+
         lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
     except (OSError, UnicodeError, ValueError) as error:
         write(f"Ошибка чтения стартового скрипта: {error}\n")
@@ -383,7 +372,6 @@ def script_steps(path, write, vfs, clear_output=None):
         if result["error"] or result["exit_requested"]:
             return
     write("Стартовый скрипт выполнен.\n")
-
 
 
 class EmulatorApp:
@@ -425,7 +413,7 @@ class EmulatorApp:
         self.output_print(config_text(config))
         self.update_invitation()
         self.entry.bind("<Return>", self.on_enter)
-        
+
         self.entry.configure(state=tk.DISABLED)
         GUI.after_idle(self.startup)
 
@@ -438,7 +426,7 @@ class EmulatorApp:
             self.output.configure(state=tk.DISABLED)
 
     def clear_output(self):
-        # Удаляем только текст на экране: VFS, текущая папка и таймер сохраняются.
+
         self.output.configure(state=tk.NORMAL)
         try:
             self.output.delete("1.0", tk.END)
@@ -498,7 +486,7 @@ class EmulatorApp:
             self.steps.close()
             self.enable_input()
         else:
-            
+
             self.GUI.after(60, self.run_next_script_line)
 
 

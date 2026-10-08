@@ -1,0 +1,13 @@
+# Несколько файлов, двоичный файл и пустая папка.
+ls
+ls docs
+ls /data
+cd docs
+ls
+cd ..
+cd /empty
+ls
+cd
+cd "папка с пробелами"
+ls
+cd /

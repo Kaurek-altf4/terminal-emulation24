@@ -1,0 +1,3 @@
+ls /
+cd /readme.txt
+unknown_after_error
