@@ -1,0 +1,29 @@
+# Основная проверка режимов ls и cd. Запускается на deep.zip.
+# VFS_DEMO_DIR задаётся в test_all_commands.sh и test_ok.sh.
+
+ls
+ls .
+ls /
+ls docs
+ls /data
+cd docs
+ls
+cd .
+cd ..
+cd /
+cd ../../..
+cd "папка с пробелами"
+ls
+cd
+cd /empty
+ls
+cd
+ls "$VFS_DEMO_DIR"
+cd "$VFS_DEMO_DIR"
+ls
+cd /level1/level2/level3
+ls
+cd ../../..
+# Последняя проверка — ошибка. После неё скрипт обязан остановиться.
+cd /missing-directory
+unknown_after_error

@@ -1,0 +1,28 @@
+# Пункт 3 этапа 4: обычные режимы и ошибка в конце. VFS: deep.zip.
+uptime
+ls
+ls .
+ls /
+ls docs
+cd docs
+ls
+cd .
+cd ..
+cd /level1/level2/level3
+ls
+cd ../../..
+cd "папка с пробелами"
+ls
+cd /empty
+ls
+cd
+cd ..
+# clear стирает предыдущий вывод, но не меняет папку VFS и таймер.
+cd /docs
+clear
+ls
+uptime
+cd /
+# Ошибка должна остановить скрипт. Последняя строка не выполняется.
+cd /missing-directory
+unknown_after_error

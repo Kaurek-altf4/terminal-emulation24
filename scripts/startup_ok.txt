@@ -1,0 +1,7 @@
+# VFS_DEMO_DIR задаётся скриптом ОС; это реальная переменная окружения.
+ls "$VFS_DEMO_DIR"
+cd "$VFS_DEMO_DIR"
+ls
+cd ..
+ls
+cd

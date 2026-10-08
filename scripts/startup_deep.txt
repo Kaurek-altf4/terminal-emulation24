@@ -1,0 +1,15 @@
+# Три уровня папок; . и .. разрешаются только внутри VFS.
+ls
+cd level1
+ls
+cd level2
+ls
+cd level3
+ls
+cd ..
+ls ./level3
+cd /level1/level2/level3
+ls
+cd ../../..
+cd ..
+ls

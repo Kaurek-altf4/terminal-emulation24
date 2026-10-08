@@ -1,0 +1,41 @@
+# Этап 5. Запускается на deep.zip. Все изменения остаются в памяти.
+ls -l /docs
+# Числовые права и вариант с начальным нулём.
+chmod 644 /docs/guide.txt
+ls -l /docs/guide.txt
+chmod 0600 /docs/guide.txt
+ls -l /docs/guide.txt
+# Символьные +, - и =; владелец, группа, остальные и все.
+chmod u+x /docs/guide.txt
+chmod g+w /docs/guide.txt
+chmod o+r /docs/guide.txt
+ls -l /docs/guide.txt
+chmod go-w /docs/guide.txt
+chmod a=r /docs/guide.txt
+ls -l /docs/guide.txt
+chmod u=rw,g=r,o= /docs/guide.txt
+ls -l /docs/guide.txt
+# Относительный путь и путь с пробелами.
+cd docs
+chmod 000 guide.txt
+ls -l guide.txt
+chmod 644 ./guide.txt
+cd ..
+chmod 600 "папка с пробелами/заметка.txt"
+ls -l "папка с пробелами"
+# Несколько объектов одной командой: изменения независимы для каждого.
+chmod 640 /readme.txt /docs/guide.txt
+ls -l /readme.txt
+ls -l /docs/guide.txt
+# Папка и рекурсивная обработка трёх уровней.
+chmod 700 /empty
+ls -l /
+chmod -R 750 /level1
+ls -l /level1
+ls -l /level1/level2
+ls -l /level1/level2/level3
+chmod --recursive a+r /level1
+# Изменение двоичного файла не изменяет его содержимое.
+chmod 444 /data/blob.bin
+ls -l /data
+# Конец без ошибок: окно остаётся доступным для ручных команд.

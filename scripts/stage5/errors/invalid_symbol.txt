@@ -1,0 +1,4 @@
+# Ожидается ошибка, после которой выполнение останавливается.
+ls -l /readme.txt
+chmod u+q /readme.txt
+unknown_after_error

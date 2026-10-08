@@ -1,0 +1,3 @@
+ls /
+clear extra
+unknown_after_error
