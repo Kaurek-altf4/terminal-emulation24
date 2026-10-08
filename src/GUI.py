@@ -29,7 +29,8 @@ class MemoryVFS:
 
     def add_directory(self, path):
         if path in self.files:
-            raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
+            raise VFSLoadError(
+                f"путь одновременно является файлом и папкой: {path}")
         self.directories.add(path)
         self.permissions.setdefault(path, 0o755)
 
@@ -47,7 +48,8 @@ class MemoryVFS:
                             or any(part in ("", ".", "..") for part in parts)):
                         raise VFSLoadError(f"недопустимое имя в ZIP: {name!r}")
                     if stat.S_ISLNK(info.external_attr >> 16):
-                        raise VFSLoadError(f"символические ссылки не поддерживаются: {name}")
+                        raise VFSLoadError(
+                            f"символические ссылки не поддерживаются: {name}")
                     path = "/" + "/".join(parts)
                     if path in seen:
                         raise VFSLoadError(f"повторяющийся путь в ZIP: {path}")
@@ -59,9 +61,13 @@ class MemoryVFS:
                         vfs.add_directory(path)
                     else:
                         if path in vfs.directories:
-                            raise VFSLoadError(f"путь одновременно является файлом и папкой: {path}")
+                            raise VFSLoadError(
+                                "путь одновременно является файлом "
+                                f"и папкой: {path}"
+                            )
                         data = archive.read(info)
-                        vfs.files[path] = base64.b64encode(data).decode("ascii")
+                        vfs.files[path] = base64.b64encode(
+                            data).decode("ascii")
 
                     unix_mode = info.external_attr >> 16
                     default = 0o755 if info.is_dir() else 0o644
@@ -72,8 +78,17 @@ class MemoryVFS:
         except FileNotFoundError as error:
             raise VFSLoadError(f"файл не найден: {archive_path}") from error
         except zipfile.BadZipFile as error:
-            raise VFSLoadError(f"неверный формат или повреждённый ZIP: {archive_path}") from error
-        except (OSError, ValueError, RuntimeError, NotImplementedError, EOFError, zlib.error) as error:
+            raise VFSLoadError(
+                f"неверный формат или повреждённый ZIP: {archive_path}"
+            ) from error
+        except (
+            OSError,
+            ValueError,
+            RuntimeError,
+            NotImplementedError,
+            EOFError,
+            zlib.error,
+        ) as error:
             raise VFSLoadError(f"не удалось прочитать ZIP: {error}") from error
         return vfs
 
@@ -96,7 +111,10 @@ class MemoryVFS:
                 continue
             parts.append(part)
             candidate = "/" + "/".join(parts)
-            if candidate not in self.directories and candidate not in self.files:
+            if (
+                candidate not in self.directories
+                and candidate not in self.files
+            ):
                 raise FileNotFoundError(candidate)
         result = "/" + "/".join(parts)
         if path.endswith("/") and result not in self.directories:
@@ -128,9 +146,7 @@ class MemoryVFS:
             raise IsADirectoryError(path)
         return base64.b64decode(self.files[path], validate=True)
 
-
     def chmod(self, mode, paths, recursive=False):
-
         apply_permission_mode(0, mode)
         targets = set()
         for path in paths:
@@ -138,7 +154,11 @@ class MemoryVFS:
             targets.add(resolved)
             if recursive and resolved in self.directories:
                 prefix = resolved.rstrip("/") + "/"
-                targets.update(item for item in self.permissions if item.startswith(prefix))
+                targets.update(
+                    item
+                    for item in self.permissions
+                    if item.startswith(prefix)
+                )
         changes = {
             path: apply_permission_mode(self.permissions[path], mode)
             for path in targets
@@ -165,9 +185,11 @@ def apply_permission_mode(current, mode):
     if re.fullmatch(r"0?[0-7]{3}", mode):
         return int(mode, 8)
     clauses = mode.split(",")
-    parsed = [re.fullmatch(r"([ugoa]+)([+\-=])([rwx]*)", part) for part in clauses]
+    parsed = [re.fullmatch(r"([ugoa]+)([+\-=])([rwx]*)", part)
+              for part in clauses]
     if not all(parsed):
-        raise ValueError("неверные права: используйте 644, 0755 или u+x,go-w (только rwx)")
+        raise ValueError(
+            "неверные права: используйте 644, 0755 или u+x,go-w (только rwx)")
     for clause in parsed:
         who, operation, rights = clause.groups()
         groups = "ugo" if "a" in who else who
@@ -189,14 +211,20 @@ def apply_permission_mode(current, mode):
 
 
 def read_config(argv=None):
-    cli = argparse.ArgumentParser(description="GUI-эмулятор: этап 5, chmod в памяти")
-    cli.add_argument("--vfs", default=str(Path(__file__).resolve().parents[1] / "vfs/minimal.zip"),
-                     help="Путь к ZIP-архиву VFS (по умолчанию vfs/minimal.zip)")
+    cli = argparse.ArgumentParser(
+        description="GUI-эмулятор: этап 5, chmod в памяти")
+    cli.add_argument(
+        "--vfs",
+        default=str(
+            Path(__file__).resolve().parents[1] / "vfs/minimal.zip"
+        ),
+        help="Путь к ZIP-архиву VFS (по умолчанию vfs/minimal.zip)",
+    )
     cli.add_argument("--script", help="Путь к стартовому скрипту UTF-8")
     config = cli.parse_args(argv)
 
-
-    config.vfs = os.path.abspath(os.path.expanduser(os.path.expandvars(config.vfs)))
+    config.vfs = os.path.abspath(
+        os.path.expanduser(os.path.expandvars(config.vfs)))
     if config.script is not None:
         config.script = os.path.abspath(
             os.path.expanduser(os.path.expandvars(config.script))
@@ -223,7 +251,12 @@ def parser(user_input: str) -> dict:
     return {"command": tokens[0], "args": args, "error": None}
 
 
-def command_result(output="", error=False, exit_requested=False, clear_requested=False):
+def command_result(
+    output="",
+    error=False,
+    exit_requested=False,
+    clear_requested=False,
+):
     return {
         "output": output,
         "error": error,
@@ -251,7 +284,10 @@ def do_ls(args, vfs):
     if detailed:
         args = args[1:]
     if len(args) > 1:
-        return command_result("ls: ожидается не более одного пути (можно с -l)", error=True)
+        return command_result(
+            "ls: ожидается не более одного пути (можно с -l)",
+            error=True,
+        )
     path = args[0] if args else "."
     try:
         rows = vfs.list_permissions(path) if detailed else vfs.listdir(path)
@@ -303,7 +339,9 @@ def do_clear(args, vfs=None):
 
 def do_uptime(args, vfs=None):
     if args:
-        return command_result("uptime: аргументы не поддерживаются", error=True)
+        return command_result(
+            "uptime: аргументы не поддерживаются", error=True
+        )
     elapsed = int(time.monotonic() - START_TIME)
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -334,7 +372,9 @@ def judge(parsed, vfs):
     }
     handler = handlers.get(parsed["command"])
     if handler is None:
-        return command_result(f"{parsed['command']}: команда не найдена", error=True)
+        return command_result(
+            f"{parsed['command']}: команда не найдена", error=True
+        )
     return handler(parsed["args"], vfs)
 
 
@@ -343,7 +383,6 @@ def make_invitation(vfs):
 
 
 def execute_line(text, write, vfs, clear_output=None):
-
     write(f"{make_invitation(vfs)}{text}\n")
     result = judge(parser(text), vfs)
     if result["clear_requested"] and clear_output is not None:
@@ -355,19 +394,20 @@ def execute_line(text, write, vfs, clear_output=None):
 
 def script_steps(path, write, vfs, clear_output=None):
     try:
-
         lines = Path(path).read_text(encoding="utf-8-sig").splitlines()
     except (OSError, UnicodeError, ValueError) as error:
         write(f"Ошибка чтения стартового скрипта: {error}\n")
         return
 
     for line_number, text in enumerate(lines, start=1):
-
         if not text.strip() or text.lstrip().startswith("#"):
             continue
         result = execute_line(text, write, vfs, clear_output)
         if result["error"]:
-            write(f"Стартовый скрипт остановлен: ошибка в строке {line_number}.\n")
+            write(
+                "Стартовый скрипт остановлен: "
+                f"ошибка в строке {line_number}.\n"
+            )
         yield result
         if result["error"] or result["exit_requested"]:
             return
@@ -399,12 +439,14 @@ class EmulatorApp:
         self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         output_row = tk.Frame(GUI, bg="#000000")
-        output_row.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        output_row.pack(side=tk.TOP, fill=tk.BOTH,
+                        expand=True, padx=5, pady=(0, 5))
         scrollbar = tk.Scrollbar(output_row)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.output = tk.Text(
             output_row, bg="#000000", fg="#EBA10C", font=("Consolas", 11),
-            borderwidth=0, highlightthickness=0, takefocus=0, state=tk.DISABLED,
+            borderwidth=0, highlightthickness=0,
+            takefocus=0, state=tk.DISABLED,
             yscrollcommand=scrollbar.set
         )
         self.output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -426,7 +468,6 @@ class EmulatorApp:
             self.output.configure(state=tk.DISABLED)
 
     def clear_output(self):
-
         self.output.configure(state=tk.NORMAL)
         try:
             self.output.delete("1.0", tk.END)
@@ -447,7 +488,8 @@ class EmulatorApp:
             return "break"
         text = self.entry.get()
         self.entry.delete(0, tk.END)
-        result = execute_line(text, self.output_print, self.vfs, self.clear_output)
+        result = execute_line(text, self.output_print,
+                              self.vfs, self.clear_output)
         if result["exit_requested"]:
             self.GUI.destroy()
             return "break"
@@ -459,17 +501,23 @@ class EmulatorApp:
         try:
             self.vfs = MemoryVFS.from_zip(self.config.vfs)
         except VFSLoadError as error:
-            self.output_print(f"Ошибка загрузки VFS: {error}\nСтартовый скрипт не запущен.\n")
+            self.output_print(
+                f"Ошибка загрузки VFS: {error}\n"
+                "Стартовый скрипт не запущен.\n"
+            )
             self.enable_input()
             return
-        self.output_print(f"VFS загружена в память: файлов — {len(self.vfs.files)}, "
-                          f"папок — {len(self.vfs.directories)} (включая /).\n")
+        self.output_print(
+            f"VFS загружена в память: файлов — {len(self.vfs.files)}, "
+            f"папок — {len(self.vfs.directories)} (включая /).\n"
+        )
         self.update_invitation()
         if self.config.script is None:
             self.enable_input()
             return
         self.running_script = True
-        self.steps = script_steps(self.config.script, self.output_print, self.vfs, self.clear_output)
+        self.steps = script_steps(
+            self.config.script, self.output_print, self.vfs, self.clear_output)
         self.run_next_script_line()
 
     def run_next_script_line(self):
@@ -486,7 +534,6 @@ class EmulatorApp:
             self.steps.close()
             self.enable_input()
         else:
-
             self.GUI.after(60, self.run_next_script_line)
 
 
