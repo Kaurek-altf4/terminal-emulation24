@@ -422,7 +422,7 @@ class EmulatorApp:
         self.running_script = False
         GUI.configure(bg="#000000")
         GUI.title(f"Эмулятор - [{getpass.getuser()}@{socket.gethostname()}]")
-        GUI.geometry("700x450")
+        GUI.geometry("800x450")
         GUI.resizable(width=False, height=False)
 
         input_row = tk.Frame(GUI, bg="#000000")
@@ -549,6 +549,4 @@ def main(argv=None):
     GUI.mainloop()
     return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+raise SystemExit(main())
