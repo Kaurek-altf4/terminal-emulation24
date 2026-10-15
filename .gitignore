@@ -8,3 +8,7 @@ htmlcov/
 .env
 .DS_Store
 Thumbs.db
+
+# Generated VFS examples; rebuild with scripts/build_vfs.py.
+/vfs/**/*.zip
+/vfs/**/*.bin

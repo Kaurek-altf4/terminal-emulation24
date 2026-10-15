@@ -1,4 +1,7 @@
-.PHONY: run test
+.PHONY: run test prepare
+
+prepare:
+	python3 scripts/build_vfs.py
 
 run:
 	bash run.sh

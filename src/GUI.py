@@ -14,6 +14,8 @@ import tkinter as tk
 
 
 START_TIME = time.monotonic()
+ZIP_UNIX_SYSTEM = 3
+CHMOD_MIN_ARGUMENTS = 2
 
 
 class VFSLoadError(Exception):
@@ -34,6 +36,43 @@ class MemoryVFS:
         self.directories.add(path)
         self.permissions.setdefault(path, 0o755)
 
+    @staticmethod
+    def _archive_parts(info):
+        name = info.orig_filename
+        parts = name.rstrip("/").split("/")
+        invalid_name = name.startswith("/") or "\\" in name or "\x00" in name
+        if invalid_name or any(part in ("", ".", "..") for part in parts):
+            raise VFSLoadError(f"недопустимое имя в ZIP: {name!r}")
+        if stat.S_ISLNK(info.external_attr >> 16):
+            raise VFSLoadError(
+                f"символические ссылки не поддерживаются: {name}")
+        return parts
+
+    def _store_file(self, archive, info, path):
+        if path in self.directories:
+            raise VFSLoadError(
+                f"путь одновременно является файлом и папкой: {path}")
+        data = archive.read(info)
+        self.files[path] = base64.b64encode(data).decode("ascii")
+
+    def _load_entry(self, archive, info, seen):
+        parts = self._archive_parts(info)
+        path = "/" + "/".join(parts)
+        if path in seen:
+            raise VFSLoadError(f"повторяющийся путь в ZIP: {path}")
+        seen.add(path)
+        for length in range(1, len(parts)):
+            self.add_directory("/" + "/".join(parts[:length]))
+        if info.is_dir():
+            self.add_directory(path)
+        else:
+            self._store_file(archive, info, path)
+        unix_mode = info.external_attr >> 16
+        default = 0o755 if info.is_dir() else 0o644
+        self.permissions[path] = default
+        if info.create_system == ZIP_UNIX_SYSTEM and unix_mode:
+            self.permissions[path] = stat.S_IMODE(unix_mode) & 0o777
+
     @classmethod
     def from_zip(cls, archive_path):
         vfs = cls()
@@ -41,40 +80,7 @@ class MemoryVFS:
         try:
             with zipfile.ZipFile(archive_path, "r") as archive:
                 for info in archive.infolist():
-                    name = info.orig_filename
-
-                    parts = name.rstrip("/").split("/")
-                    if (name.startswith("/") or "\\" in name or "\x00" in name
-                            or any(part in ("", ".", "..") for part in parts)):
-                        raise VFSLoadError(f"недопустимое имя в ZIP: {name!r}")
-                    if stat.S_ISLNK(info.external_attr >> 16):
-                        raise VFSLoadError(
-                            f"символические ссылки не поддерживаются: {name}")
-                    path = "/" + "/".join(parts)
-                    if path in seen:
-                        raise VFSLoadError(f"повторяющийся путь в ZIP: {path}")
-                    seen.add(path)
-
-                    for length in range(1, len(parts)):
-                        vfs.add_directory("/" + "/".join(parts[:length]))
-                    if info.is_dir():
-                        vfs.add_directory(path)
-                    else:
-                        if path in vfs.directories:
-                            raise VFSLoadError(
-                                "путь одновременно является файлом "
-                                f"и папкой: {path}"
-                            )
-                        data = archive.read(info)
-                        vfs.files[path] = base64.b64encode(
-                            data).decode("ascii")
-
-                    unix_mode = info.external_attr >> 16
-                    default = 0o755 if info.is_dir() else 0o644
-                    vfs.permissions[path] = (
-                        stat.S_IMODE(unix_mode) & 0o777
-                        if info.create_system == 3 and unix_mode else default
-                    )
+                    vfs._load_entry(archive, info, seen)
         except FileNotFoundError as error:
             raise VFSLoadError(f"файл не найден: {archive_path}") from error
         except zipfile.BadZipFile as error:
@@ -82,15 +88,26 @@ class MemoryVFS:
                 f"неверный формат или повреждённый ZIP: {archive_path}"
             ) from error
         except (
-            OSError,
-            ValueError,
-            RuntimeError,
-            NotImplementedError,
-            EOFError,
-            zlib.error,
+            OSError, ValueError, RuntimeError, NotImplementedError,
+            EOFError, zlib.error,
         ) as error:
             raise VFSLoadError(f"не удалось прочитать ZIP: {error}") from error
         return vfs
+
+    def _resolve_part(self, parts, part):
+        current = "/" + "/".join(parts)
+        if current not in self.directories:
+            raise NotADirectoryError(current)
+        if part == ".":
+            return
+        if part == "..":
+            if parts:
+                parts.pop()
+            return
+        parts.append(part)
+        candidate = "/" + "/".join(parts)
+        if candidate not in self.directories and candidate not in self.files:
+            raise FileNotFoundError(candidate)
 
     def resolve(self, path):
         if not path or "\x00" in path:
@@ -98,24 +115,8 @@ class MemoryVFS:
         parts = [] if path.startswith("/") else self.cwd.strip("/").split("/")
         parts = [part for part in parts if part]
         for part in path.split("/"):
-            if not part:
-                continue
-            current = "/" + "/".join(parts)
-            if current not in self.directories:
-                raise NotADirectoryError(current)
-            if part == ".":
-                continue
-            if part == "..":
-                if parts:
-                    parts.pop()
-                continue
-            parts.append(part)
-            candidate = "/" + "/".join(parts)
-            if (
-                candidate not in self.directories
-                and candidate not in self.files
-            ):
-                raise FileNotFoundError(candidate)
+            if part:
+                self._resolve_part(parts, part)
         result = "/" + "/".join(parts)
         if path.endswith("/") and result not in self.directories:
             raise NotADirectoryError(result)
@@ -317,7 +318,7 @@ def do_chmod(args, vfs):
         args = args[1:]
     if args and args[0] == "--":
         args = args[1:]
-    if len(args) < 2:
+    if len(args) < CHMOD_MIN_ARGUMENTS:
         return command_result(
             "chmod: использование: chmod [-R] MODE PATH [PATH ...]", error=True
         )
@@ -415,17 +416,26 @@ def script_steps(path, write, vfs, clear_output=None):
 
 
 class EmulatorApp:
-    def __init__(self, GUI, config):
-        self.GUI = GUI
+    def __init__(self, gui, config):
+        self.gui = gui
         self.config = config
         self.vfs = None
         self.running_script = False
-        GUI.configure(bg="#000000")
-        GUI.title(f"Эмулятор - [{getpass.getuser()}@{socket.gethostname()}]")
-        GUI.geometry("800x450")
-        GUI.resizable(width=False, height=False)
+        gui.configure(bg="#000000")
+        gui.title(f"Эмулятор - [{getpass.getuser()}@{socket.gethostname()}]")
+        gui.geometry("800x450")
+        gui.resizable(width=False, height=False)
 
-        input_row = tk.Frame(GUI, bg="#000000")
+        self._create_input()
+        self._create_output()
+        self.output_print(config_text(config))
+        self.update_invitation()
+        self.entry.bind("<Return>", self.on_enter)
+        self.entry.configure(state=tk.DISABLED)
+        gui.after_idle(self.startup)
+
+    def _create_input(self):
+        input_row = tk.Frame(self.gui, bg="#000000")
         input_row.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
         self.invitation = tk.Label(
             input_row, text="", bg="#000000", fg="#EBA10C",
@@ -438,7 +448,8 @@ class EmulatorApp:
         )
         self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        output_row = tk.Frame(GUI, bg="#000000")
+    def _create_output(self):
+        output_row = tk.Frame(self.gui, bg="#000000")
         output_row.pack(side=tk.TOP, fill=tk.BOTH,
                         expand=True, padx=5, pady=(0, 5))
         scrollbar = tk.Scrollbar(output_row)
@@ -451,13 +462,6 @@ class EmulatorApp:
         )
         self.output.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.configure(command=self.output.yview)
-
-        self.output_print(config_text(config))
-        self.update_invitation()
-        self.entry.bind("<Return>", self.on_enter)
-
-        self.entry.configure(state=tk.DISABLED)
-        GUI.after_idle(self.startup)
 
     def output_print(self, text):
         self.output.configure(state=tk.NORMAL)
@@ -491,7 +495,7 @@ class EmulatorApp:
         result = execute_line(text, self.output_print,
                               self.vfs, self.clear_output)
         if result["exit_requested"]:
-            self.GUI.destroy()
+            self.gui.destroy()
             return "break"
         self.update_invitation()
         self.entry.focus_set()
@@ -529,24 +533,26 @@ class EmulatorApp:
         self.update_invitation()
         if result["exit_requested"]:
             self.steps.close()
-            self.GUI.after(100, self.GUI.destroy)
+            self.gui.after(100, self.gui.destroy)
         elif result["error"]:
             self.steps.close()
             self.enable_input()
         else:
-            self.GUI.after(60, self.run_next_script_line)
+            self.gui.after(60, self.run_next_script_line)
 
 
 def main(argv=None):
     config = read_config(argv)
     print(config_text(config), end="", flush=True)
     try:
-        GUI = tk.Tk()
+        gui = tk.Tk()
     except tk.TclError as error:
         print(f"Не удалось открыть GUI: {error}")
         return 1
-    EmulatorApp(GUI, config)
-    GUI.mainloop()
+    EmulatorApp(gui, config)
+    gui.mainloop()
     return 0
 
-raise SystemExit(main())
+
+if __name__ == "__main__":
+    raise SystemExit(main())
